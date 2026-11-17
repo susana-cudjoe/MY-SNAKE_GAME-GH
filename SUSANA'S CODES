@@ -1,0 +1,515 @@
+import random
+import tkinter as tk
+
+try:
+    import winsound  # Windows sound effects; the game still works without it.
+except ImportError:
+    winsound = None
+
+# ---------------- Constants ----------------
+
+CELL = 24
+COLS = 25
+ROWS = 20
+WIDTH = CELL * COLS
+HEIGHT = CELL * ROWS
+START_SPEED = 220
+HIGH_SCORE_FILE = "snake_highscore.txt"
+OBSTACLE_COUNT = 2
+
+DIRECTIONS = {
+    "Up": (0, -1),
+    "Down": (0, 1),
+    "Left": (-1, 0),
+    "Right": (1, 0),
+}
+
+OPPOSITE = {
+    "Up": "Down",
+    "Down": "Up",
+    "Left": "Right",
+    "Right": "Left",
+}
+
+KEYS = {
+    "up": "Up", "w": "Up",
+    "down": "Down", "s": "Down",
+    "left": "Left", "a": "Left",
+    "right": "Right", "d": "Right",
+}
+
+
+# ---------------- Logic Functions ----------------
+
+def next_head(head, move_direction):
+    dx, dy = DIRECTIONS[move_direction]
+    x, y = head
+    return x + dx, y + dy
+
+
+def hits_wall(cell):
+    x, y = cell
+    return x < 0 or x >= COLS or y < 0 or y >= ROWS
+
+
+def hits_self(head, body):
+    return head in body[:-1]
+
+
+def random_food(body, obstacles=()):
+    free_cells = [
+        (x, y)
+        for x in range(COLS)
+        for y in range(ROWS)
+        if (x, y) not in body and (x, y) not in obstacles
+    ]
+    return random.choice(free_cells) if free_cells else None
+
+
+def make_obstacles(body):
+    """Choose obstacle cells away from the starting snake."""
+    forbidden = set(body)
+    forbidden.update((x, y) for x in range(0, 10) for y in range(7, 14))
+    free_cells = [(x, y) for x in range(COLS) for y in range(ROWS) if (x, y) not in forbidden]
+    return set(random.sample(free_cells, min(OBSTACLE_COUNT, len(free_cells))))
+
+
+def play_sound(kind):
+    """Play short built-in beeps without external audio files."""
+    if winsound is None:
+        try:
+            root.bell()
+        except tk.TclError:
+            pass
+        return
+    try:
+        winsound.Beep(880, 90) if kind == "eat" else winsound.Beep(220, 260)
+    except (RuntimeError, tk.TclError):
+        pass
+
+
+def level_for(current_score):
+    return current_score // 5 + 1
+
+
+def speed_for(current_level):
+    return max(120, START_SPEED - (current_level - 1) * 10)
+
+
+def load_high_score():
+    try:
+        with open(HIGH_SCORE_FILE, "r", encoding="utf-8") as file:
+            return max(0, int(file.read().strip()))
+    except (FileNotFoundError, ValueError, OSError):
+        return 0
+
+
+def save_high_score(current_score):
+    try:
+        with open(HIGH_SCORE_FILE, "w", encoding="utf-8") as file:
+            file.write(str(current_score))
+    except OSError:
+        pass
+
+
+# ---------------- Game State ----------------
+
+snake = []
+direction = "Right"
+next_direction = "Right"
+food = None
+score = 0
+level = 1
+high_score = load_high_score()
+running = False
+paused = False
+loop_id = None
+wrap_mode = False
+obstacles = set()
+
+
+# ---------------- Drawing Functions ----------------
+
+def draw_grid():
+    for x in range(0, WIDTH, CELL):
+        canvas.create_line(x, 0, x, HEIGHT, fill="#1e1e1e")
+
+    for y in range(0, HEIGHT, CELL):
+        canvas.create_line(0, y, WIDTH, y, fill="#1e1e1e")
+
+
+def update_labels():
+    mode_text = "ON" if wrap_mode else "OFF"
+
+    score_label.config(
+        text=f"Score: {score}       Level: {level}       Best: {high_score}       No Walls: {mode_text}"
+    )
+
+
+# IMPROVEMENT 1: SNAKE WITH EYES
+
+def draw_snake_eyes(x, y):
+    left = x * CELL
+    top = y * CELL
+    eye_radius = 2.5
+
+    if direction == "Right":
+        eye_centres = [
+            (left + 17, top + 7),
+            (left + 17, top + 17)
+        ]
+
+    elif direction == "Left":
+        eye_centres = [
+            (left + 7, top + 7),
+            (left + 7, top + 17)
+        ]
+
+    elif direction == "Up":
+        eye_centres = [
+            (left + 7, top + 7),
+            (left + 17, top + 7)
+        ]
+
+    else:
+        eye_centres = [
+            (left + 7, top + 17),
+            (left + 17, top + 17)
+        ]
+
+    for eye_x, eye_y in eye_centres:
+        canvas.create_oval(
+            eye_x - eye_radius,
+            eye_y - eye_radius,
+            eye_x + eye_radius,
+            eye_y + eye_radius,
+            fill="#121212",
+            outline="",
+            tags="piece"
+        )
+
+
+def draw():
+    canvas.delete("piece", "message")
+
+    for ox, oy in obstacles:
+        canvas.create_rectangle(
+            ox * CELL + 2, oy * CELL + 2,
+            ox * CELL + CELL - 2, oy * CELL + CELL - 2,
+            fill="#607d8b", outline="#90a4ae", width=1, tags="piece"
+        )
+
+    if food is not None:
+        fx, fy = food
+
+        canvas.create_oval(
+            fx * CELL + 4,
+            fy * CELL + 4,
+            fx * CELL + CELL - 4,
+            fy * CELL + CELL - 4,
+            fill="#e53935",
+            outline="",
+            tags="piece"
+        )
+
+    for index, (x, y) in enumerate(snake):
+
+        colour = "#ffffff"
+
+        canvas.create_rectangle(
+            x * CELL + 1,
+            y * CELL + 1,
+            x * CELL + CELL - 1,
+            y * CELL + CELL - 1,
+            fill=colour,
+            outline="",
+            tags="piece"
+        )
+
+        if index == 0:
+            draw_snake_eyes(x, y)
+
+    update_labels()
+
+
+def show_message(title, subtitle):
+    canvas.delete("message")
+
+    canvas.create_text(
+        WIDTH // 2,
+        HEIGHT // 2 - 20,
+        text=title,
+        fill="white",
+        font=("Segoe UI", 28, "bold"),
+        tags="message"
+    )
+
+    canvas.create_text(
+        WIDTH // 2,
+        HEIGHT // 2 + 20,
+        text=subtitle,
+        fill="#bbbbbb",
+        font=("Segoe UI", 11),
+        tags="message"
+    )
+
+
+# ---------------- Game Functions ----------------
+
+def start_game(event=None):
+    global snake, direction, next_direction, food, obstacles
+    global score, level, running, paused, loop_id
+
+    if loop_id is not None:
+        try:
+            root.after_cancel(loop_id)
+        except tk.TclError:
+            pass
+
+        loop_id = None
+
+    snake = [(5, 10), (4, 10), (3, 10)]
+
+    direction = "Right"
+    next_direction = "Right"
+
+    score = 0
+    level = 1
+
+    obstacles = make_obstacles(snake)
+    food = random_food(snake, obstacles)
+
+    running = True
+    paused = False
+
+    draw()
+
+    loop_id = root.after(speed_for(level), game_loop)
+
+
+def game_loop():
+    global direction, food, score, level, loop_id, running
+
+    if not running or paused:
+        return
+
+    direction = next_direction
+
+    head = next_head(snake[0], direction)
+
+    # IMPROVEMENT 2: NO WALLS MODE
+
+    if wrap_mode:
+        head = (
+            head[0] % COLS,
+            head[1] % ROWS
+        )
+
+    elif hits_wall(head):
+        game_over()
+        return
+
+    if hits_self(head, snake) or head in obstacles:
+        game_over()
+        return
+
+    snake.insert(0, head)
+
+    if head == food:
+
+        score += 1
+        play_sound("eat")
+        level = level_for(score)
+
+        food = random_food(snake, obstacles)
+
+        if food is None:
+            running = False
+            draw()
+
+            show_message(
+                "YOU WIN!",
+                f"Final score: {score}. Press Space to play again"
+            )
+
+            update_high_score()
+            return
+
+    else:
+        snake.pop()
+
+    draw()
+
+    loop_id = root.after(speed_for(level), game_loop)
+
+
+def on_key(event):
+    global next_direction
+
+    new_direction = KEYS.get(event.keysym.lower())
+
+    if new_direction is None or not running or paused:
+        return
+
+    if new_direction != OPPOSITE[direction]:
+        next_direction = new_direction
+
+
+def on_space(event=None):
+    if not running:
+        start_game()
+
+
+def toggle_pause(event=None):
+    global paused, loop_id
+
+    if not running:
+        return
+
+    paused = not paused
+
+    if paused:
+
+        if loop_id is not None:
+            root.after_cancel(loop_id)
+            loop_id = None
+
+        show_message(
+            "PAUSED",
+            "Press P to continue"
+        )
+
+    else:
+        canvas.delete("message")
+        loop_id = root.after(speed_for(level), game_loop)
+
+
+def toggle_wrap_mode(event=None):
+    global wrap_mode
+
+    wrap_mode = not wrap_mode
+
+    update_labels()
+
+    if running and not paused:
+
+        show_message(
+            "NO WALLS: ON" if wrap_mode else "NO WALLS: OFF",
+            "Press an arrow key or W A S D to continue"
+        )
+
+        root.after(
+            700,
+            lambda: canvas.delete("message")
+            if running and not paused else None
+        )
+
+
+def update_high_score():
+    global high_score
+
+    if score > high_score:
+        high_score = score
+        save_high_score(high_score)
+
+
+def game_over():
+    global running, loop_id
+
+    play_sound("game_over")
+    running = False
+    loop_id = None
+
+    is_new_record = score > high_score
+
+    update_high_score()
+    update_labels()
+
+    if is_new_record and score > 0:
+        show_message(
+            "NEW HIGH SCORE!",
+            f"You scored {score}. Press Space to play again"
+        )
+
+    else:
+        show_message(
+            "GAME OVER",
+            f"You scored {score}. Press Space to play again"
+        )
+
+
+# ---------------- Build the Window ----------------
+
+root = tk.Tk()
+
+root.title("SnakeGH - Classic Arcade Game")
+root.resizable(False, False)
+root.configure(bg="#0d1b2a")
+
+
+tk.Label(
+    root,
+    text="SnakeGH",
+    font=("Segoe UI", 22, "bold"),
+    fg="#66bb6a",
+    bg="#0d1b2a"
+).pack(pady=(10, 0))
+
+
+score_label = tk.Label(
+    root,
+    text="Score: 0       Level: 1       Best: 0       No Walls: OFF",
+    font=("Consolas", 11, "bold"),
+    fg="white",
+    bg="#0d1b2a"
+)
+
+score_label.pack(pady=(0, 8))
+
+
+canvas = tk.Canvas(
+    root,
+    width=WIDTH,
+    height=HEIGHT,
+    bg="#121212",
+    highlightthickness=0
+)
+
+canvas.pack(padx=15)
+
+
+tk.Label(
+    root,
+    text="Arrows / W A S D = move     P = pause     N = No Walls     Grey blocks = obstacles     Space = start/restart",
+    fg="#90a4ae",
+    bg="#0d1b2a",
+    font=("Segoe UI", 9)
+).pack(pady=8)
+
+
+# ---------------- Keyboard Controls ----------------
+
+root.bind("<Key>", on_key)
+root.bind("<space>", on_space)
+
+root.bind("p", toggle_pause)
+root.bind("P", toggle_pause)
+
+root.bind("n", toggle_wrap_mode)
+root.bind("N", toggle_wrap_mode)
+
+
+# ---------------- Start Application ----------------
+
+draw_grid()
+update_labels()
+
+show_message(
+    "SnakeGH",
+    "Press Space to start"
+)
+
+root.mainloop()
+
+
+
